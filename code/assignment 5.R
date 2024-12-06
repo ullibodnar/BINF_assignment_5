@@ -54,13 +54,41 @@ checkObjects(parameters) # Need to load functions FIRST for this to run, I kept 
 forwardList <- path |>
   list.files(pattern = "_R1_001.fastq", full.names = TRUE) |>
   sort()
+head(forwardList)
 
 reverseList <- path |> 
   list.files(pattern = "_R2_001.fastq", full.names = TRUE) |>
   sort()
+head(reverseList)
+
 
 # Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
 sample.names <- sapply(strsplit(basename(forwardList), "_"), `[`, 1)
+
+# From the help for the plotQualityProfile function: "The plotted lines show positional summary statistics: green is the mean, orange is the median, and the dashed orange lines are the 25th and 75th quantiles."
+
+# Plot quality of forward sequences
+plotQualityProfile(forwardList) +
+  ggtitle("Sequence Quality Profiles of Forward Reads") +
+  xlab("Base Position (bp)") +
+  ylab("Quality Score (Phred Score)") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  )
+
+# Plot quality of reverse sequences
+plotQualityProfile(reverseList) +
+  ggtitle("Sequence Quality Profiles of Reverse Reads") +
+  xlab("Base Position (bp)") +
+  ylab("Quality Score (Phred Score)") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  )
+
+# When inspecting the quality of the forward and reverse sequences, it is clear that the reverse typically drop off in quality much faster than the forward reads, therefore we will often trim the forward reads at 240, and the reverse at 200. It is also recommended to trim the initial reads as well since calibration issues can cause them to be problematic. The ambiguous nucleotides are filtered out with maxN = 0, and the reads with more than 2 expected errors are filtered out as well. 
+
 
 
 # Global Functions --------------------------------------------------------
@@ -150,7 +178,6 @@ calculateDiversity <- function (
     checkObjects(filtFs, filtRs)
     
    
-    # When inspecting the quality of the forward and reverse sequences, it is clear that the reverse typically drop off in quality much faster than the forward reads, therefore we will often trim the forward reads at 240, and the reverse at 200. It is also recommended to trim the initial reads as well since calibration issues can cause them to be problematic. The ambiguous nucleotides are filtered out with maxN = 0, and the reads with more than 2 expected errors are filtered out as well. 
     filterStats <- tryCatch({ # Here we use a try catch since some of the combinations of parameters cause there to be no results, so we want a way to catch the error and proceed with the rest of the combinations
       filterAndTrim (
         fwd = fnFs, 
@@ -231,15 +258,6 @@ calculateDiversity <- function (
 }
 
 
-  
-# Create a merger ---------------------------------------------------------
-
-# From the help for the plotQualityProfile function: "The plotted lines show positional summary statistics: green is the mean, orange is the median, and the dashed orange lines are the 25th and 75th quantiles."
-#plot quality of forward sequences
-plotQualityProfile(forwardList[1:2])
-#plot quality of reverse sequences
-plotQualityProfile(reverseList[1:2])
-
 
 # Analysis operations -------------------------------------------------------
 
@@ -263,7 +281,7 @@ resultsDebug <- apply(parameters[2, ], 1, function (row) {
 # DO NOT RUN UNLESS YOU PLAN ON WATCHING TWO MOVIES IN THE MEANTIME
 # results <- apply(parameters, 1, function (row) {
 #   calculateDiversity(
-#     forwardList, 
+#     forwardList,
 #     reverseList,
 #     truncLenF = unlistNumeric(row["truncLenF"]),
 #     truncLenR = unlistNumeric(row["truncLenR"]),
@@ -289,35 +307,29 @@ resultsDebug <- apply(parameters[2, ], 1, function (row) {
 results_df <- read.csv("../data/results/results_with_diversity_metrics.csv")
 
 
-results_df |>
-  group_by(maxEE, trimLeft) |>
-  summarise(
-    mean_richness = mean(richness, na.rm = TRUE),
-    mean_shannon = mean(shannon, na.rm = TRUE),
-    .groups = "drop"
-  )
 
 
+# Hypothesis testing ------------------------------------------------------
+
+# Subset data to exclude rows with NA
+clean_results <- results_df |> 
+  filter(!is.na(richness) & !is.na(shannon))
+
+# Test the effect of parameters on Shannon diversity using ANOVA
+anova_shannon <- aov(shannon ~ truncLenF * truncLenR * maxEE * trimLeft, data = clean_results)
+shannon_summary <- summary(anova_shannon)
+shannon_df <- as.data.frame(shannon_summary[[1]])
+write.csv(shannon_df, "../data/results/anova_shannon_summary.csv")
+
+# Test the effect of parameters on Richness using ANOVA
+anova_richness <- aov(richness ~ truncLenF * truncLenR * maxEE * trimLeft, data = clean_results)
+richness_summary <- summary(anova_richness)
+richness_df <- as.data.frame(richness_summary[[1]])
+write.csv(richness_df, "../data/results/anova_richness_sum")
 
 
 
 # Plot richness and shannon -----------------------------------------------------------
-
-# Plot richness by forward and reverse truncation
-ggplot(results_df, aes(x = truncLenF, y = richness, color = factor(trimLeft))) +
-  geom_line(size = 1) +
-  geom_point(size = 3) +
-  facet_wrap(~ truncLenR, scales = "free_y") +
-  labs(
-    title = "Impact of Forward and Reverse Truncation Lengths on Richness",
-    x = "Forward Truncation Length (truncLenF)",
-    y = "Richness",
-    color = "Trim Left"
-  ) +
-  theme_minimal() +
-  annotate("rect", xmin = 220, xmax = 240, ymin = -Inf, ymax = Inf, alpha = 0.2, fill = "blue") +
-  annotate("text", x = 220, y = 85, label = "Significant Region", size = 4)
-
 
 # Plot a heatmap of richness by parameter combinations
 ggplot(results_df, aes(x = truncLenF, y = truncLenR, fill = richness)) +
@@ -338,8 +350,8 @@ ggplot(results_df, aes(x = truncLenF, y = truncLenR, fill = richness)) +
   
   labs(
     title = "Heatmap of Richness by Parameter Combinations",
-    x = "Forward Truncation Length",
-    y = "Reverse Truncation Length",
+    x = "Forward Truncation Length (bp)",
+    y = "Reverse Truncation Length (bp)",
     fill = "Richness"
   ) +
   theme_minimal(base_size = 14)
@@ -363,13 +375,14 @@ ggplot(results_df, aes(x = truncLenF, y = truncLenR, fill = shannon)) +
   ) +
   labs(
     title = "Heatmap of Shannon Diversity by Parameter Combinations",
-    x = "Forward Truncation Length",
-    y = "Reverse Truncation Length",
+    x = "Forward Truncation Length (bp)",
+    y = "Reverse Truncation Length (bp)",
     fill = "Shannon Diversity"
   ) +
   theme_minimal(base_size = 14)
 
 
+# Histogram of failed filtering
 results_df |>
   mutate(failed = is.na(richness)) |>
   group_by(failed) |>
@@ -383,23 +396,4 @@ results_df |>
     fill = "Failed"
   ) +
   theme_minimal()
-
-
-# Assign taxonomy ---------------------------------------------------------
-
-taxa <- assignTaxonomy(seqtab.nochim, "../data/MiSeq_SOP/silva_nr_v132_train_set.fa.gz", multithread = TRUE)
-taxa.print <- taxa
-rownames(taxa.print) <- NULL
-head(taxa.print)
-
-
-
-
-
-#From the tutorial: "This is the final product of the dada2 pipeline, a matrix in which each row corresponds to a processed sample, and each column corresponds to an non-chimeric inferred sample sequence (a more precise analogue to the common "OTU table")." And, each cell contains the count of sequences for that variant. "From here we recommend proceeding forward with our friend the phyloseq package for further analysis."
-
-
-# POSSIBLY DO THIS:
-#Build a phylogenetic tree from the unique sequences and mark the relative abundances for the variants in each of the two samples.
-#Example package for ideas the visualization: https://guangchuangyu.github.io/ggtree-book/chapter-ggtree.html
 
